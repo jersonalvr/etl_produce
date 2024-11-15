@@ -11,9 +11,33 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 import plotly.express as px
 import plotly.graph_objects as go
+from supabase import create_client, Client
 
 def show_modelo():
-# Título y descripción de la aplicación
+
+    def get_supabase_client() -> Client:
+        url = st.secrets["connections"]["supabase"]["SUPABASE_URL"]
+        key = st.secrets["connections"]["supabase"]["SUPABASE_KEY"]
+        return create_client(url, key)
+
+    def guardar_prediccion_supabase(datos_prediccion):
+        try:
+            client = get_supabase_client()
+            
+            # Insertar datos en Supabase
+            response = client.table('prediccion').insert(datos_prediccion).execute()
+            
+            if response.data:
+                st.success("¡Datos guardados exitosamente en Supabase!")
+                return True
+            else:
+                st.error("Error al guardar los datos en Supabase")
+                return False
+        except Exception as e:
+            st.error(f"Error al conectar con Supabase: {str(e)}")
+            return False
+
+    # Título y descripción de la aplicación
     st.title('Modelo de Random Forest para Pesca Artesanal en Coishco')
     st.write("""
     Esta aplicación permite visualizar la importancia de las características en un modelo de Random Forest para la predicción del volumen de captura.
@@ -272,54 +296,88 @@ def show_modelo():
     mostrar_grafico = False
 
     # Cuando el usuario envía los datos
-    if st.button("Generar Predicción y Explicación"):
-        # Almacenar las entradas del usuario en un diccionario
-        user_inputs = {
-            'caballos_motor': caballos_motor,
-            'millas_recorridas': millas_recorridas,
-            'precio_kg': precio_kg,
-            'talla_cm': talla_cm,
-            'costo_combustible': costo_combustible,
-            'ganancia': ganancia,
-            'temperatura_agua': temperatura_agua,
-            'profundidad': profundidad,
-            'salinidad': salinidad,
-            'velocidad_viento': velocidad_viento,
-            'corriente_marina': corriente_marina,
-            'cpue': cpue
-        }
-        
-        # Generar la predicción usando el modelo
-        prediccion = generar_prediccion(caballos_motor, millas_recorridas, precio_kg, talla_cm, 
-                                        costo_combustible, ganancia, temperatura_agua, profundidad, 
-                                        salinidad, velocidad_viento, corriente_marina, cpue)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Generar Predicción y Explicación"):
+            # Almacenar las entradas del usuario en un diccionario
+            user_inputs = {
+                'caballos_motor': caballos_motor,
+                'millas_recorridas': millas_recorridas,
+                'precio_kg': precio_kg,
+                'talla_cm': talla_cm,
+                'costo_combustible': costo_combustible,
+                'ganancia': ganancia,
+                'temperatura_agua': temperatura_agua,
+                'profundidad': profundidad,
+                'salinidad': salinidad,
+                'velocidad_viento': velocidad_viento,
+                'corriente_marina': corriente_marina,
+                'cpue': cpue
+            }
+            
+            # Generar la predicción usando el modelo
+            prediccion = generar_prediccion(caballos_motor, millas_recorridas, precio_kg, talla_cm, 
+                                            costo_combustible, ganancia, temperatura_agua, profundidad, 
+                                            salinidad, velocidad_viento, corriente_marina, cpue)
 
-        # Mostrar predicción de forma más llamativa
-        st.markdown(f"""
-            <div style="text-align: center; padding: 20px; 
-                        background-color: rgba(0, 0, 0, 0); 
-                        border-radius: 10px; 
-                        border: 2px solid #eb5952;">
-                <h3 style="color: #93c7fa;">📈 Predicción del Volumen Capturado (Kg) basado en los datos ingresados:</h3>
-                <p style="font-size: 28px; font-weight: bold; 
-                        color: #ec5a53;">{prediccion:.2f} Kg</p>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Usar API para generar una respuesta explicativa basada en los datos
-        explicacion = generar_respuesta_rapidapi(prediccion, user_inputs)
-        
-        # Añadir un espacio antes de mostrar la explicación
-        st.markdown("<br>", unsafe_allow_html=True)
+            # Almacenar las entradas del usuario, la predicción y las selecciones
+            datos_prediccion = {
+                # Datos de selección del usuario
+                'enfoque': opcion,
+                'seleccion_nombre': seleccion,
+                'n_estimators': n_estimators_range[1],  # Usamos el valor máximo del rango
+                
+                # Datos del formulario
+                'caballos_motor': caballos_motor,
+                'millas_recorridas': millas_recorridas,
+                'precio_kg': precio_kg,
+                'talla_cm': talla_cm,
+                'costo_combustible': costo_combustible,
+                'ganancia': ganancia,
+                'temperatura_agua': temperatura_agua,
+                'profundidad': profundidad,
+                'salinidad': salinidad,
+                'velocidad_viento': velocidad_viento,
+                'corriente_marina': corriente_marina,
+                'cpue': cpue,
+                'volumen_predicho': float(prediccion)
+            }
+            
+            # Guardar en variable de sesión para usar con el botón de Supabase
+            st.session_state['ultima_prediccion'] = datos_prediccion
 
-        # Mostrar la respuesta generada por API
-        if explicacion:
-            with st.container():
-                st.markdown("### Explicación")
-                st.markdown(f"{explicacion}")
-        
-        # Cambiar la variable de control para mostrar el gráfico
-        mostrar_grafico = True
+            # Mostrar predicción de forma más llamativa
+            st.markdown(f"""
+                <div style="text-align: center; padding: 20px; 
+                            background-color: rgba(0, 0, 0, 0); 
+                            border-radius: 10px; 
+                            border: 2px solid #eb5952;">
+                    <h3 style="color: #93c7fa;">📈 Predicción del Volumen Capturado (Kg):</h3>
+                    <p style="font-size: 28px; font-weight: bold; 
+                            color: #ec5a53;">{prediccion:.2f} Kg</p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Usar API para generar una respuesta explicativa
+            explicacion = generar_respuesta_rapidapi(prediccion, user_inputs)
+            
+            if explicacion:
+                with st.container():
+                    st.markdown("### Explicación")
+                    st.markdown(f"{explicacion}")
+            
+            mostrar_grafico = True
+
+    with col2:
+        if st.button("Guardar en Supabase"):
+            if 'ultima_prediccion' in st.session_state:
+                if guardar_prediccion_supabase(st.session_state['ultima_prediccion']):
+                    # Mostrar datos guardados en una tabla
+                    st.write("Datos guardados:")
+                    df_guardado = pd.DataFrame([st.session_state['ultima_prediccion']])
+                    st.dataframe(df_guardado)
+            else:
+                st.warning("Primero debe generar una predicción antes de guardar")
 
     # Mostrar el gráfico solo si se ha generado la predicción y la explicación
     if mostrar_grafico:
