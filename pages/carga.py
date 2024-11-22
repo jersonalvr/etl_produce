@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit as st 
 import pandas as pd
 from supabase import create_client, Client
 import openpyxl
@@ -6,6 +6,8 @@ from datetime import datetime, time
 from dateutil import parser
 import re
 import logging
+from typing import Optional, List
+from st_keyup import st_keyup
 
 def show_carga():
     logging.basicConfig(level=logging.INFO)
@@ -20,6 +22,10 @@ def show_carga():
         return create_client(url, key)
 
     supabase = get_supabase_client()
+
+    # Definir 'url' y 'key' para su uso posterior
+    url = st.secrets["connections"]["supabase"]["SUPABASE_URL"]
+    key = st.secrets["connections"]["supabase"]["SUPABASE_KEY"]
 
     def es_matricula_formal(matricula):
         if not isinstance(matricula, str):
@@ -270,3 +276,248 @@ def show_carga():
                 
             status_text.text("Proceso completado")
             progress_bar.progress(1.0)
+
+    def show_supabase_setup_info():
+        """Muestra información de configuración para Supabase"""
+        
+        setup_sql = """
+    create or replace function get_tables()
+    returns table (table_name text)
+    language sql
+    as $$
+        select table_name::text
+        from information_schema.tables
+        where table_schema = 'public'
+        and table_type = 'BASE TABLE';
+    $$;
+    """
+        
+        with st.expander("ℹ️ Configuración de Supabase", expanded=False):
+            st.markdown("""
+            ### Pasos para configurar Supabase
+
+            1. **Crear función RPC en Supabase:**
+                - Ve al Editor SQL de Supabase
+                - Copia y ejecuta el siguiente código:
+            """)
+            
+            # Mostrar el SQL con botón de copiado
+            st.code(setup_sql, language='sql')
+            
+            st.markdown("""
+            2. **[Verificar credenciales:](https://supabase.com/dashboard/project/_/settings/api)**
+                - URL del proyecto: `Settings -> API -> Project URL`
+                - API Key: `Settings -> API -> Project API keys -> anon/public`
+                
+            3. **Permisos necesarios:**
+                - La función necesita acceso a `information_schema.tables`
+                - El usuario debe tener permisos para ejecutar la función RPC
+                
+            4. **Solución de problemas:**
+                - Asegúrate de que existan tablas en el esquema público
+                - Verifica que la base de datos esté activa
+                - Confirma que las políticas de seguridad permitan el acceso
+            """)
+
+    def get_supabase_tables(url: str, key: str) -> Optional[List[str]]:
+        """Obtiene la lista de tablas disponibles en Supabase"""
+        try:
+            from supabase import create_client, Client
+            
+            # Crear cliente de Supabase
+            supabase: Client = create_client(url, key)
+            
+            try:
+                # Intenta primero usando RPC
+                result = supabase.rpc('get_tables').execute()
+                
+                if hasattr(result, 'data') and result.data:
+                    tables = [table['table_name'] for table in result.data]
+                    if tables:
+                        return sorted(tables)  # Ordenar las tablas alfabéticamente
+            except Exception as rpc_error:
+                st.warning(f"Método RPC falló: {str(rpc_error)}")
+                
+                try:
+                    # Si RPC falla, intenta con una consulta SQL directa
+                    result = supabase.from_('information_schema.tables')\
+                        .select('table_name')\
+                        .eq('table_schema', 'public')\
+                        .eq('table_type', 'BASE TABLE')\
+                        .execute()
+                    
+                    if hasattr(result, 'data') and result.data:
+                        return sorted([table['table_name'] for table in result.data])
+                except Exception as sql_error:
+                    st.warning(f"Consulta SQL directa falló: {str(sql_error)}")
+                    
+                    # Último intento usando postgREST
+                    try:
+                        result = supabase.table('tables').select('*').execute()
+                        if hasattr(result, 'data') and result.data:
+                            return sorted([table['name'] for table in result.data])
+                    except Exception as postgrest_error:
+                        st.error(f"Todos los métodos de consulta fallaron: {str(postgrest_error)}")
+            
+            st.warning("No se encontraron tablas en el esquema público")
+            # Mostrar ayuda de configuración
+            show_supabase_setup_info()
+            return None
+                        
+        except Exception as e:
+            st.error(f"Error al conectar con Supabase: {str(e)}")
+            st.write("Detalles del error:", str(e))
+            # Mostrar ayuda de configuración
+            show_supabase_setup_info()
+            return None
+
+    def load_supabase_table(url: str, key: str, table_name: str) -> Optional[pd.DataFrame]:
+        """Carga una tabla de Supabase como DataFrame"""
+        try:
+            from supabase import create_client, Client
+            
+            # Crear cliente de Supabase
+            supabase: Client = create_client(url, key)
+            
+            # Realizar la consulta a la tabla
+            response = supabase.table(table_name).select("*").execute()
+            
+            if hasattr(response, 'data'):
+                df = pd.DataFrame(response.data)
+                if not df.empty:
+                    return df
+                else:
+                    st.warning(f"La tabla '{table_name}' está vacía")
+                    return None
+            else:
+                st.error("No se pudieron obtener datos de la tabla")
+                return None
+                
+        except Exception as e:
+            st.error(f"Error al cargar la tabla de Supabase: {str(e)}")
+            st.write("Detalles del error:", str(e))
+            return None
+
+    st.markdown("#### Carga desde Supabase")
+
+    # Inicializar variables de estado
+    if 'supabase_tables' not in st.session_state:
+        st.session_state.supabase_tables = None
+    if 'supabase_connected' not in st.session_state:
+        st.session_state.supabase_connected = False
+
+    status_container = st.empty()
+
+    col1, col2 = st.columns([1, 4])
+
+    with col1:
+        if st.button(
+            "Conectar" if not st.session_state.supabase_connected else "Reconectar",
+            key="connect_supabase",
+            help="Conectar a Supabase y listar tablas disponibles"
+        ):
+            with st.spinner("Conectando a Supabase..."):
+                tables = get_supabase_tables(
+                    url,
+                    key
+                )
+                
+                if tables:
+                    st.session_state.supabase_tables = tables
+                    st.session_state.supabase_connected = True
+                    status_container.success("✅ Conexión exitosa a Supabase")
+                else:
+                    st.session_state.supabase_connected = False
+                    status_container.error("❌ No se pudieron obtener las tablas. Verifica tus credenciales.")
+
+    if st.session_state.supabase_connected and st.session_state.supabase_tables:
+        table_container = st.container()
+        
+        with table_container:
+            selected_table = st.selectbox(
+                "Selecciona una tabla:",
+                st.session_state.supabase_tables,
+                key="supabase_table_selector"
+            )
+            
+            # Inicializar el DataFrame en session_state si no existe
+            if 'current_df' not in st.session_state:
+                st.session_state.current_df = None
+            
+            if st.button("Cargar Tabla", key="load_supabase_table"):
+                try:
+                    with st.spinner("Cargando datos..."):
+                        df = load_supabase_table(
+                            url,
+                            key,
+                            selected_table
+                        )
+                        if df is not None:
+                            st.session_state.current_df = df  # Guardar el DataFrame en session_state
+                            st.session_state.er_data = df
+                            st.success(f"✅ Tabla '{selected_table}' cargada exitosamente")
+                
+                except Exception as e:
+                    st.error(f"❌ Error al cargar la tabla: {str(e)}")
+                    st.write("Detalles del error:", str(e))
+            
+            # Solo mostrar las opciones de búsqueda y la tabla si hay datos cargados
+            if st.session_state.current_df is not None:
+                df = st.session_state.current_df  # Usar el DataFrame guardado
+                
+                # Mostrar el DataFrame y las opciones de búsqueda
+                st.write("### Datos cargados")
+                st.write(f"Total de registros: {len(df)}")
+                
+                # Crear dos columnas para la búsqueda
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    columns = df.columns.tolist()
+                    selected_column = st.selectbox(
+                        "Selecciona la columna para buscar",
+                        columns,
+                        key="search_column"
+                    )
+                
+                with col2:
+                    search_term = st_keyup(
+                        "Ingresa el término de búsqueda",
+                        key="search_term"
+                    )
+                
+                # Filtrar y mostrar datos
+                if search_term:
+                    try:
+                        filtered = df[df[selected_column].astype(str).str.lower().str.contains(search_term.lower(), na=False)]
+                        if not filtered.empty:
+                            st.write(f"Se encontraron {len(filtered)} registros para '{search_term}' en la columna '{selected_column}'")
+                            st.dataframe(filtered)
+                            
+                            csv = filtered.to_csv(index=False)
+                            st.download_button(
+                                label="Descargar resultados filtrados",
+                                data=csv,
+                                file_name=f"busqueda_{selected_column}_{search_term}.csv",
+                                mime="text/csv"
+                            )
+                        else:
+                            st.warning(f"No se encontraron coincidencias para '{search_term}' en la columna '{selected_column}'")
+                            st.dataframe(df)  # Mostrar tabla completa si no hay resultados
+                    except Exception as e:
+                        st.error(f"Error al realizar la búsqueda: {str(e)}")
+                        st.dataframe(df)  # Mostrar tabla completa en caso de error
+                else:
+                    # Mostrar tabla completa cuando no hay término de búsqueda
+                    st.dataframe(df)
+                    
+                    # Botón para descargar tabla completa
+                    csv_full = df.to_csv(index=False)
+                    st.download_button(
+                        label="Descargar tabla completa",
+                        data=csv_full,
+                        file_name=f"{selected_table}_completo.csv",
+                        mime="text/csv"
+                    )
+
+    return st.session_state.get('er_data', None)
